@@ -9,5 +9,5 @@ run-bot:
   script:
     - python bot.py
   rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "schedule"
-      when: always
