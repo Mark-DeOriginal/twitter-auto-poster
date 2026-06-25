@@ -77,7 +77,7 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     )
     user_prompt = f"Headline: {title}\nSource URL: {url}"
     resp = groq_client.chat.completions.create(
-        model="llama-3.3-70b-specdec",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
