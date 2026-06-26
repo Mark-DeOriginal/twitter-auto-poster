@@ -4,12 +4,11 @@ import sys
 from datetime import datetime, timezone
 
 import requests
-import tweepy
 from groq import Groq
 
 POSTED_DB = "posted_articles.json"
 NEWS_API_URL = "https://newsapi.org/v2/everything"
-MAX_TWEET_LENGTH = 260
+TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def load_posted_urls() -> set:
@@ -88,16 +87,19 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def post_tweet(client: tweepy.Client, text: str) -> str:
-    if len(text) > MAX_TWEET_LENGTH:
-        text = text[: MAX_TWEET_LENGTH - 3].rstrip() + "..."
-    resp = client.create_tweet(text=text)
-    tweet_id = resp.data["id"]
-    return tweet_id
+def send_telegram(bot_token: str, chat_id: str, text: str) -> str:
+    url = TELEGRAM_API_URL.format(token=bot_token)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    resp = requests.post(url, json=payload, timeout=15)
+    resp.raise_for_status()
+    result = resp.json()
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram error: {result}")
+    return str(result["result"]["message_id"])
 
 
 def main() -> None:
-    for var in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET",
+    for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
                 "NEWS_API_KEY", "GROQ_API_KEY"):
         if var not in os.environ:
             print(f"Missing required env var: {var}", file=sys.stderr)
@@ -138,20 +140,18 @@ def main() -> None:
 
     print(f"Rewritten: {rewritten}")
 
-    tweepy_client = tweepy.Client(
-        consumer_key=os.environ["X_API_KEY"],
-        consumer_secret=os.environ["X_API_SECRET"],
-        access_token=os.environ["X_ACCESS_TOKEN"],
-        access_token_secret=os.environ["X_ACCESS_SECRET"],
-    )
     try:
-        tweet_id = post_tweet(tweepy_client, rewritten)
+        msg_id = send_telegram(
+            os.environ["TELEGRAM_BOT_TOKEN"],
+            os.environ["TELEGRAM_CHAT_ID"],
+            rewritten,
+        )
     except Exception as e:
-        print(f"Failed to post tweet: {e}", file=sys.stderr)
+        print(f"Failed to send Telegram message: {e}", file=sys.stderr)
         sys.exit(1)
 
     save_article(url, title)
-    print(f"Posted successfully — tweet ID: {tweet_id}")
+    print(f"Posted successfully — message ID: {msg_id}")
 
 
 if __name__ == "__main__":
