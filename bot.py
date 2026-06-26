@@ -87,13 +87,13 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def resolve_chat_id(bot_token: str) -> str:
+def resolve_chat_id(bot_token: str) -> str | None:
     url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
     if not data.get("ok") or not data.get("result"):
-        raise RuntimeError("No messages received by bot yet. Message the bot first on Telegram.")
+        return None
     return str(data["result"][-1]["message"]["chat"]["id"])
 
 
@@ -150,8 +150,12 @@ def main() -> None:
 
     print(f"Rewritten: {rewritten}")
 
+    chat_id = resolve_chat_id(bot_token)
+    if chat_id is None:
+        print("No messages yet — message the bot on Telegram to start receiving updates")
+        sys.exit(0)
+
     try:
-        chat_id = resolve_chat_id(bot_token)
         msg_id = send_telegram(bot_token, chat_id, rewritten)
     except Exception as e:
         print(f"Failed to send Telegram message: {e}", file=sys.stderr)
