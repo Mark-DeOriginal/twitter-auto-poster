@@ -87,6 +87,16 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
+def resolve_chat_id(bot_token: str) -> str:
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok") or not data.get("result"):
+        raise RuntimeError("No messages received by bot yet. Message the bot first on Telegram.")
+    return str(data["result"][-1]["message"]["chat"]["id"])
+
+
 def send_telegram(bot_token: str, chat_id: str, text: str) -> str:
     url = TELEGRAM_API_URL.format(token=bot_token)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -99,14 +109,14 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> str:
 
 
 def main() -> None:
-    for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                "NEWS_API_KEY", "GROQ_API_KEY"):
+    for var in ("TELEGRAM_BOT_TOKEN", "NEWS_API_KEY", "GROQ_API_KEY"):
         if var not in os.environ:
             print(f"Missing required env var: {var}", file=sys.stderr)
             sys.exit(1)
 
     news_api_key = os.environ["NEWS_API_KEY"]
     groq_api_key = os.environ["GROQ_API_KEY"]
+    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
 
     posted = load_posted_urls()
     print(f"Already posted: {len(posted)} URLs")
@@ -141,11 +151,8 @@ def main() -> None:
     print(f"Rewritten: {rewritten}")
 
     try:
-        msg_id = send_telegram(
-            os.environ["TELEGRAM_BOT_TOKEN"],
-            os.environ["TELEGRAM_CHAT_ID"],
-            rewritten,
-        )
+        chat_id = resolve_chat_id(bot_token)
+        msg_id = send_telegram(bot_token, chat_id, rewritten)
     except Exception as e:
         print(f"Failed to send Telegram message: {e}", file=sys.stderr)
         sys.exit(1)
