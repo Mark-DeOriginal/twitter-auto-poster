@@ -3,6 +3,8 @@ import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from bot import run_listener
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -24,8 +26,6 @@ server = HTTPServer(("0.0.0.0", port), HealthHandler)
 t = threading.Thread(target=server.serve_forever, daemon=True)
 t.start()
 print(f"Health server on port {port}")
-
-from bot import run_listener
 
 run_listener(
     os.environ["TELEGRAM_BOT_TOKEN"],
