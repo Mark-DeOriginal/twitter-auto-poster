@@ -316,6 +316,15 @@ def run_cron(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
 def run_listener(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
     """Long-polling listener: responds to commands instantly, posts news on schedule."""
     requests.get(f"https://api.telegram.org/bot{bot_token}/deleteWebhook", timeout=10)
+    requests.post(f"https://api.telegram.org/bot{bot_token}/setMyCommands", json={
+        "commands": [
+            {"command": "start", "description": "Welcome message"},
+            {"command": "help", "description": "Show available commands"},
+            {"command": "latest", "description": "Get the latest news right now"},
+            {"command": "report", "description": "Generate blog: defi, ai, or crypto"},
+            {"command": "status", "description": "Bot stats and info"},
+        ]
+    }, timeout=10)
     print("Listener started \u2014 polling for messages...")
     state = load_json(STATE_DB) if os.path.exists(STATE_DB) else {}
     if not isinstance(state, dict):
