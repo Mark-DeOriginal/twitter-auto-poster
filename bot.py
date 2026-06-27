@@ -98,6 +98,78 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
+def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
+    """Fetch multiple articles on a topic and write a long-form blog post."""
+    search_terms = {
+        "defi": "defi OR decentralized finance OR blockchain lending OR yield farming",
+        "ai": "artificial intelligence OR AI OR machine learning OR LLM OR GPT",
+        "crypto": "bitcoin OR ethereum OR cryptocurrency OR crypto market OR regulation",
+    }
+    query = search_terms.get(topic, search_terms["crypto"])
+
+    resp = requests.get(NEWS_API_URL, params={
+        "q": query, "pageSize": 10, "sortBy": "publishedAt",
+        "language": "en", "apiKey": news_api_key,
+    }, timeout=15)
+    resp.raise_for_status()
+    payload = resp.json()
+    if payload.get("status") != "ok":
+        raise RuntimeError(f"NewsAPI error: {payload.get('message', 'unknown')}")
+
+    articles = []
+    seen = set()
+    for a in payload.get("articles", []):
+        url = a.get("url", "").strip()
+        title = a.get("title", "").strip()
+        desc = (a.get("description") or "").strip()
+        if url and title and url not in seen:
+            seen.add(url)
+            articles.append(f"- {title}: {desc}\n  Source: {url}")
+
+    if not articles:
+        return f"No recent news found on {topic}."
+
+    groq_client = Groq(api_key=groq_api_key)
+    resp = groq_client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": (
+                "You are a tech journalist writing a newsletter. Write a long-form blog post "
+                "based on the latest news items below.\n\n"
+                "Rules:\n"
+                "- Write 400-600 words in clear, engaging English\n"
+                "- Structure it like a real blog: headline, intro, body paragraphs, closing\n"
+                "- Cover the key developments and explain why they matter\n"
+                "- Never use hashtags, emojis, or marketing fluff\n"
+                "- End with a list of source URLs"
+            )},
+            {"role": "user", "content": "Here are the latest news stories:\n\n" + "\n\n".join(articles)},
+        ],
+        temperature=0.8,
+        max_tokens=2000,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def split_long_message(text: str, limit: int = 4000) -> list[str]:
+    """Split a long message into chunks at paragraph boundaries."""
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    while text:
+        if len(text) <= limit:
+            parts.append(text)
+            break
+        split_at = text.rfind("\n\n", 0, limit)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        parts.append(text[:split_at])
+        text = text[split_at:].strip()
+    return parts
+
+
 def post_news(bot_token: str, chat_id: str, news_api_key: str, groq_api_key: str) -> str | None:
     """Fetch, rewrite, and send the latest unposted article. Returns the message id."""
     posted = load_posted_urls()
@@ -124,6 +196,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             f"Hey {first_name}! I track crypto, finance, and tech news.\n\n"
             f"Every 2 hours I\u2019ll send a top headline rewritten by AI.\n\n"
             f"/latest \u2014 Get news right now\n"
+            f"/report [topic] \u2014 Long-form blog: defi, ai, crypto\n"
             f"/help \u2014 Commands\n"
             f"/status \u2014 Stats"
         )
@@ -132,6 +205,9 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         responses.append(
             "/start \u2014 Welcome\n"
             "/latest \u2014 Post the top news story now\n"
+            "/report defi \u2014 DeFi newsletter\n"
+            "/report ai \u2014 AI newsletter\n"
+            "/report crypto \u2014 Crypto newsletter\n"
             "/status \u2014 How many articles posted\n"
             "/help \u2014 This menu"
         )
@@ -143,6 +219,20 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             f"Schedule: Every 2 hours\n"
             f"Topics: Crypto, Finance, Tech, AI"
         )
+
+    elif text.startswith("/report"):
+        parts = text.split(maxsplit=1)
+        topic = parts[1].lower() if len(parts) > 1 else "crypto"
+        if topic not in ("defi", "ai", "crypto"):
+            topic = "crypto"
+        try:
+            blog = generate_blog_post(topic, news_api_key, groq_api_key)
+            chunks = split_long_message(blog)
+            for chunk in chunks:
+                send_telegram(bot_token, chat_id, chunk)
+            responses.append(f"Report generated on {topic}")
+        except Exception as e:
+            responses.append(f"Failed to generate report: {e}")
 
     elif text == "/latest":
         try:
