@@ -14,7 +14,7 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True)
     if not data:
