@@ -252,8 +252,9 @@ def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
 
     if not articles:
         return f"No recent news found on {topic}."
-    groq_client = Groq(api_key=groq_api_key)
-    resp2 = groq_client.chat.completions.create(
+    try:
+        groq_client = Groq(api_key=groq_api_key)
+        resp2 = groq_client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": (
