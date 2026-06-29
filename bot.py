@@ -77,7 +77,7 @@ def _parse_published(entry: dict) -> datetime | None:
 
 
 def fetch_rss(categories: list[str], max_per_feed: int = 10,
-              max_age_days: int = 7) -> list[dict]:
+              max_age_days: int = 2) -> list[dict]:
     """Fetch recent articles from RSS feeds, filtered and sorted by recency."""
     seen, articles = set(), []
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
