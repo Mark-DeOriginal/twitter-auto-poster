@@ -13,6 +13,13 @@ STATE_DB = "bot_state.json"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 RSS_FEEDS = {
+    "digest": [
+        "https://cointelegraph.com/rss",
+        "https://coindesk.com/arc/outboundfeeds/rss/",
+        "https://decrypt.co/feed",
+        "https://thedefiant.io/api/feed",
+        "https://techcrunch.com/feed/",
+    ],
     "crypto": [
         "https://cointelegraph.com/rss",
         "https://coindesk.com/arc/outboundfeeds/rss/",
@@ -107,7 +114,7 @@ def fetch_rss(categories: list[str], max_per_feed: int = 10,
 
     for feed_url in urls:
         try:
-            parsed = feedparser.parse(feed_url)
+            parsed = feedparser.parse(feed_url, timeout=15)
             for entry in parsed.entries[:max_per_feed]:
                 url = (entry.get("link") or "").strip()
                 title = (entry.get("title") or "").strip()
@@ -162,8 +169,8 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
 
 
 def generate_digest(groq_api_key: str) -> str:
-    """Fetch across crypto, defi and ai RSS feeds, then write a conversational roundup."""
-    articles = fetch_rss(["crypto", "defi", "ai"], max_per_feed=4)
+    """Fetch across top feeds, then write a conversational roundup."""
+    articles = fetch_rss(["digest"], max_per_feed=4)
     if not articles:
         return "Couldn't find any news right now."
 
@@ -197,7 +204,7 @@ def generate_digest(groq_api_key: str) -> str:
 
 def generate_summarized_digest(groq_api_key: str) -> str:
     """Fetch RSS and produce a tweet-length summarized digest (~5 tweets)."""
-    articles = fetch_rss(["crypto", "defi", "ai"], max_per_feed=4)
+    articles = fetch_rss(["digest"], max_per_feed=4)
     if not articles:
         return "Couldn't find any news right now."
 
@@ -307,7 +314,7 @@ def split_long_message(text: str, limit: int = 4000) -> list[str]:
 def post_news(bot_token: str, chat_id: str, groq_api_key: str) -> str | None:
     """Fetch from RSS, rewrite and send the latest unposted article."""
     posted = load_posted_urls()
-    articles = fetch_rss(["crypto", "ai"], max_per_feed=3)
+    articles = fetch_rss(["digest"], max_per_feed=3)
     article = pick_unposted_article(articles, posted)
     if not article:
         return None
