@@ -10,6 +10,7 @@ from groq import Groq
 POSTED_DB = "posted_articles.json"
 STATE_DB = "bot_state.json"
 NEWS_API_URL = "https://newsapi.org/v2/everything"
+CRYPTOPANIC_URL = "https://cryptopanic.com/api/v1/posts/"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
@@ -57,23 +58,63 @@ def _recent_from() -> str:
 
 
 def fetch_latest_news(api_key: str) -> list[dict]:
-    resp = requests.get(NEWS_API_URL, params={
-        "q": "crypto OR finance OR technology OR bitcoin OR ethereum OR stock OR market OR AI",
-        "from": _recent_from(), "pageSize": 5, "sortBy": "publishedAt",
-        "language": "en", "apiKey": api_key,
-    }, timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
-    if payload.get("status") != "ok":
-        raise RuntimeError(f"NewsAPI error: {payload.get('message', 'unknown')}")
-    articles, seen = [], set()
-    for a in payload.get("articles", []):
+    seen = set()
+    articles = []
+
+    for a in fetch_crypto_news():
         url = a.get("url", "").strip()
         title = a.get("title", "").strip()
         if url and title and url not in seen:
             seen.add(url)
             articles.append(a)
+
+    try:
+        resp = requests.get(NEWS_API_URL, params={
+            "q": "crypto OR finance OR technology OR bitcoin OR ethereum OR stock OR market OR AI",
+            "from": _recent_from(), "pageSize": 5, "sortBy": "publishedAt",
+            "language": "en", "apiKey": api_key,
+        }, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("status") == "ok":
+            for a in payload.get("articles", []):
+                url = a.get("url", "").strip()
+                title = a.get("title", "").strip()
+                if url and title and url not in seen:
+                    seen.add(url)
+                    articles.append(a)
+    except Exception:
+        pass
+
     return articles
+
+
+def fetch_crypto_news() -> list[dict]:
+    """Fetch latest crypto news from CryptoPanic (free tier, no key needed but limited)."""
+    try:
+        resp = requests.get(CRYPTOPANIC_URL, params={
+            "kind": "news", "filter": "rising", "public": "true",
+        }, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            articles, seen = [], set()
+            for r in data.get("results", []):
+                url = (r.get("url") or "").strip()
+                title = (r.get("title") or "").strip()
+                domain = r.get("domain", "")
+                source_name = r.get("source", {}).get("title", domain)
+                if url and title and url not in seen:
+                    seen.add(url)
+                    articles.append({
+                        "title": title,
+                        "url": url,
+                        "source": {"name": source_name},
+                        "description": r.get("metadata", {}).get("description", ""),
+                    })
+            return articles
+    except Exception:
+        pass
+    return []
 
 
 def pick_unposted_article(articles: list[dict], posted: set) -> dict | None:
@@ -105,15 +146,20 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
 
 def generate_digest(news_api_key: str, groq_api_key: str) -> str:
     """Fetch news across crypto, ai, defi, airdrops and write a conversational daily roundup."""
-    categories = {
-        "market": "bitcoin OR ethereum OR crypto market OR price OR trading",
-        "defi": "defi OR decentralized finance OR protocol OR TVL OR yield OR hack",
-        "ai": "artificial intelligence OR AI OR machine learning OR agent",
-        "airdrops": "airdrop OR token launch OR memecoin OR pump.fun OR solana OR nft",
-    }
-    all_articles = []
+    crypto_articles = fetch_crypto_news()
     seen = set()
+    all_articles = []
 
+    for a in crypto_articles:
+        url = a.get("url", "").strip()
+        title = a.get("title", "").strip()
+        if url and title and url not in seen:
+            seen.add(url)
+            all_articles.append(f"[crypto] {title}\nSource: {url}")
+
+    categories = {
+        "ai": "artificial intelligence OR AI OR machine learning OR agent",
+    }
     for category, query in categories.items():
         try:
             resp = requests.get(NEWS_API_URL, params={
@@ -166,34 +212,48 @@ def generate_digest(news_api_key: str, groq_api_key: str) -> str:
 
 def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
     """Fetch multiple articles on a topic and write a long-form blog post."""
-    search_terms = {
-        "defi": "defi OR decentralized finance OR blockchain lending OR yield farming",
-        "ai": "artificial intelligence OR AI OR machine learning OR LLM OR GPT",
-        "crypto": "bitcoin OR ethereum OR cryptocurrency OR crypto market OR regulation",
-    }
-    query = search_terms.get(topic, search_terms["crypto"])
-    try:
-        resp = requests.get(NEWS_API_URL, params={
-            "q": query, "from": _recent_from(),
-            "pageSize": 10, "sortBy": "publishedAt",
-            "language": "en", "apiKey": news_api_key,
-        }, timeout=15)
-        resp.raise_for_status()
-        payload = resp.json()
-        if payload.get("status") != "ok":
-            return f"NewsAPI error: {payload.get('message', 'unknown')}"
-        articles, seen = [], set()
-        for a in payload.get("articles", []):
+    articles, seen = [], set()
+
+    if topic in ("crypto", "defi"):
+        crypto_articles = fetch_crypto_news()
+        for a in crypto_articles:
             url = a.get("url", "").strip()
             title = a.get("title", "").strip()
             desc = (a.get("description") or "").strip()
             if url and title and url not in seen:
                 seen.add(url)
                 articles.append(f"- {title}: {desc}\n  Source: {url}")
-        if not articles:
-            return f"No recent news found on {topic}."
-        groq_client = Groq(api_key=groq_api_key)
-        resp2 = groq_client.chat.completions.create(
+
+    search_terms = {
+        "defi": "defi OR decentralized finance OR blockchain lending OR yield farming",
+        "ai": "artificial intelligence OR AI OR machine learning OR LLM OR GPT",
+        "crypto": "bitcoin OR ethereum OR cryptocurrency OR crypto market OR regulation",
+    }
+    query = search_terms.get(topic)
+    if query:
+        try:
+            resp = requests.get(NEWS_API_URL, params={
+                "q": query, "from": _recent_from(),
+                "pageSize": 5, "sortBy": "publishedAt",
+                "language": "en", "apiKey": news_api_key,
+            }, timeout=15)
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get("status") == "ok":
+                for a in payload.get("articles", []):
+                    url = a.get("url", "").strip()
+                    title = a.get("title", "").strip()
+                    desc = (a.get("description") or "").strip()
+                    if url and title and url not in seen:
+                        seen.add(url)
+                        articles.append(f"- {title}: {desc}\n  Source: {url}")
+        except Exception:
+            pass
+
+    if not articles:
+        return f"No recent news found on {topic}."
+    groq_client = Groq(api_key=groq_api_key)
+    resp2 = groq_client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": (
