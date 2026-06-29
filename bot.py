@@ -10,7 +10,7 @@ from groq import Groq
 POSTED_DB = "posted_articles.json"
 STATE_DB = "bot_state.json"
 NEWS_API_URL = "https://newsapi.org/v2/everything"
-CRYPTOPANIC_URL = "https://cryptopanic.com/api/v1/posts/"
+CRYPTOPANIC_URL = "https://cryptopanic.com/api/posts/"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
