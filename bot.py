@@ -17,11 +17,31 @@ RSS_FEEDS = {
         "https://cointelegraph.com/rss",
         "https://coindesk.com/arc/outboundfeeds/rss/",
         "https://decrypt.co/feed",
-        "https://cryptopotato.com/feed",
+        "https://cryptopotato.com/feed/",
+        "https://cryptoslate.com/feed/",
+        "https://www.newsbtc.com/feed/",
     ],
     "ai": [
         "https://techcrunch.com/feed/",
         "https://feeds.arstechnica.com/arstechnica/index",
+    ],
+    "defi": [
+        "https://thedefiant.io/api/feed",
+        "https://www.bankless.com/rss/feed",
+        "https://news.curve.finance/rss/",
+        "https://blog.lido.fi/rss/",
+    ],
+    "airdrops": [
+        "https://airdropalert.com/feed/rssfeed",
+    ],
+    "mining": [
+        "https://2miners.com/blog/feed/",
+        "https://bitcoinmagazine.com/feed",
+    ],
+    "blogs": [
+        "https://bitcoinmagazine.com/feed",
+        "https://www.bankless.com/rss/feed",
+        "https://thedefiant.io/api/feed",
     ],
 }
 
@@ -142,8 +162,8 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
 
 
 def generate_digest(groq_api_key: str) -> str:
-    """Fetch across crypto and ai RSS feeds, then write a conversational roundup."""
-    articles = fetch_rss(["crypto", "ai"], max_per_feed=4)
+    """Fetch across crypto, defi and ai RSS feeds, then write a conversational roundup."""
+    articles = fetch_rss(["crypto", "defi", "ai"], max_per_feed=4)
     if not articles:
         return "Couldn't find any news right now."
 
@@ -177,7 +197,7 @@ def generate_digest(groq_api_key: str) -> str:
 
 def generate_summarized_digest(groq_api_key: str) -> str:
     """Fetch RSS and produce a tweet-length summarized digest (~5 tweets)."""
-    articles = fetch_rss(["crypto", "ai"], max_per_feed=4)
+    articles = fetch_rss(["crypto", "defi", "ai"], max_per_feed=4)
     if not articles:
         return "Couldn't find any news right now."
 
@@ -203,9 +223,36 @@ def generate_summarized_digest(groq_api_key: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
+def generate_blogs_list(groq_api_key: str) -> str:
+    """Fetch from blog/analysis sources and present recent posts with links."""
+    articles = fetch_rss(["blogs", "defi"], max_per_feed=5)
+    if not articles:
+        return "No recent blog posts found."
+
+    groq_client = Groq(api_key=groq_api_key)
+    lines = []
+    for a in articles[:15]:
+        lines.append(f"- [{a['source']['name']}] {a['title']}\n  {a['url']}")
+
+    resp = groq_client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": (
+                "You curate a list of must-read crypto blog posts and analysis pieces. "
+                "Organize them by theme (DeFi, Bitcoin, onchain, airdrops, mining, privacy) "
+                "and add a 1-sentence take on why each is worth reading. "
+                "Keep it scannable. No hashtags or emojis."
+            )},
+            {"role": "user", "content": "Recent blog posts:\n\n" + "\n".join(lines)},
+        ],
+        temperature=0.7, max_tokens=1000,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def generate_blog_post(topic: str, groq_api_key: str) -> str:
     """Fetch articles for a specific topic and write a deep-dive blog post."""
-    cats = {"defi": ["crypto"], "ai": ["ai"], "crypto": ["crypto"]}
+    cats = {"defi": ["defi", "crypto"], "ai": ["ai"], "crypto": ["crypto"]}
     articles = fetch_rss(cats.get(topic, ["crypto"]), max_per_feed=8)
     if not articles:
         return f"No recent news found on {topic}."
@@ -278,10 +325,12 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     if text == "/start":
         responses.append(
-            f"Hey {first_name}! I track crypto, finance, and tech news.\n\n"
+            f"Hey {first_name}! I track crypto, defi, AI, airdrops, mining, "
+            f"and onchain news.\n\n"
             f"Every 2 hours I\u2019ll send a top headline rewritten by AI.\n\n"
             f"/full_digest \u2014 Full daily roundup\n"
             f"/summarized_digest \u2014 Condensed tweet-length version\n"
+            f"/blogs \u2014 Curated blog posts and deep dives\n"
             f"/latest \u2014 Get news right now\n"
             f"/report [topic] \u2014 Deep dive: defi, ai, crypto\n"
             f"/help \u2014 Commands\n"
@@ -294,11 +343,12 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             "/full_digest \u2014 Full daily roundup across crypto, AI, defi\n"
             "/summarized_digest \u2014 Tweet-length summary (~5 tweets)\n"
             "/digest \u2014 Alias for full_digest\n"
+            "/blogs \u2014 Curated blog posts and analysis links\n"
             "/latest \u2014 Post the top news story now\n"
             "/report defi \u2014 Deep dive into DeFi\n"
             "/report ai \u2014 Deep dive into AI\n"
             "/report crypto \u2014 Deep dive into crypto\n"
-            "/status \u2014 How many articles posted\n"
+            "/status \u2014 Bot stats\n"
             "/help \u2014 This menu"
         )
 
@@ -307,7 +357,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         responses.append(
             f"Articles posted: {len(posted)}\n"
             f"Schedule: Every 2 hours\n"
-            f"Topics: Crypto, Finance, Tech, AI"
+            f"Topics: Crypto, Defi, AI, Airdrops, Mining, Onchain"
         )
 
     elif text.startswith("/report"):
@@ -340,6 +390,15 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         except Exception as e:
             responses.append(f"Failed to generate summarized digest: {e}")
 
+    elif text == "/blogs":
+        try:
+            curated = generate_blogs_list(groq_api_key)
+            for chunk in split_long_message(curated):
+                send_telegram(bot_token, chat_id, chunk)
+            responses.append("Blog list sent")
+        except Exception as e:
+            responses.append(f"Failed to fetch blogs: {e}")
+
     elif text == "/latest":
         try:
             msg_id = post_news(bot_token, chat_id, groq_api_key)
@@ -366,6 +425,7 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
             {"command": "full_digest", "description": "Full daily roundup: crypto, AI, defi"},
             {"command": "summarized_digest", "description": "Tweet-length summary of today"},
             {"command": "digest", "description": "Alias for full_digest"},
+            {"command": "blogs", "description": "Curated blog posts and deep dives"},
             {"command": "latest", "description": "Get the latest news right now"},
             {"command": "report", "description": "Deep dive on defi, ai, or crypto"},
             {"command": "status", "description": "Bot stats and info"},
