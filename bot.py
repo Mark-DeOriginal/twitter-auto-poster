@@ -4,14 +4,26 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 
+import feedparser
 import requests
 from groq import Groq
 
 POSTED_DB = "posted_articles.json"
 STATE_DB = "bot_state.json"
-NEWS_API_URL = "https://newsapi.org/v2/everything"
-COINGECKO_NEWS_URL = "https://api.coingecko.com/api/v3/news"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
+RSS_FEEDS = {
+    "crypto": [
+        "https://cointelegraph.com/rss",
+        "https://coindesk.com/arc/outboundfeeds/rss/",
+        "https://decrypt.co/feed",
+        "https://cryptopotato.com/feed",
+    ],
+    "ai": [
+        "https://techcrunch.com/feed/",
+        "https://feeds.arstechnica.com/arstechnica/index",
+    ],
+}
 
 
 def load_json(path: str) -> dict | list:
@@ -33,18 +45,19 @@ def load_posted_urls() -> set:
 
 
 def save_article(url: str, title: str) -> None:
-    posted = load_posted_urls()
     data = load_json(POSTED_DB)
+    posted = {item["url"] for item in data if "url" in item}
     if isinstance(data, list) and url not in posted:
         data.append({"url": url, "title": title, "posted_at": datetime.now(timezone.utc).isoformat()})
         save_json(POSTED_DB, data)
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str) -> str | None:
-    url = TELEGRAM_API_URL.format(token=bot_token)
     try:
-        resp = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
-        resp.raise_for_status()
+        resp = requests.post(
+            TELEGRAM_API_URL.format(token=bot_token),
+            json={"chat_id": chat_id, "text": text}, timeout=10,
+        )
         result = resp.json()
         if result.get("ok"):
             return str(result["result"]["message_id"])
@@ -53,65 +66,32 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> str | None:
     return None
 
 
-def _recent_from() -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+def fetch_rss(categories: list[str], max_per_feed: int = 5) -> list[dict]:
+    """Fetch articles from RSS feeds grouped by categories."""
+    seen, articles = set(), []
+    urls = []
+    for cat in categories:
+        urls.extend(RSS_FEEDS.get(cat, []))
 
-
-def fetch_latest_news(api_key: str) -> list[dict]:
-    seen = set()
-    articles = []
-
-    for a in fetch_crypto_news():
-        url = a.get("url", "").strip()
-        title = a.get("title", "").strip()
-        if url and title and url not in seen:
-            seen.add(url)
-            articles.append(a)
-
-    try:
-        resp = requests.get(NEWS_API_URL, params={
-            "q": "crypto OR finance OR technology OR bitcoin OR ethereum OR stock OR market OR AI",
-            "from": _recent_from(), "pageSize": 5, "sortBy": "publishedAt",
-            "language": "en", "apiKey": api_key,
-        }, timeout=15)
-        resp.raise_for_status()
-        payload = resp.json()
-        if payload.get("status") == "ok":
-            for a in payload.get("articles", []):
-                url = a.get("url", "").strip()
-                title = a.get("title", "").strip()
-                if url and title and url not in seen:
-                    seen.add(url)
-                    articles.append(a)
-    except Exception:
-        pass
-
+    for feed_url in urls:
+        try:
+            parsed = feedparser.parse(feed_url)
+            for entry in parsed.entries[:max_per_feed]:
+                url = (entry.get("link") or "").strip()
+                title = (entry.get("title") or "").strip()
+                if not url or not title or url in seen:
+                    continue
+                seen.add(url)
+                articles.append({
+                    "title": title,
+                    "url": url,
+                    "source": {"name": getattr(parsed.feed, "title", "News")},
+                    "description": (entry.get("summary") or entry.get("description") or "").strip(),
+                    "published": entry.get("published", ""),
+                })
+        except Exception:
+            continue
     return articles
-
-
-def fetch_crypto_news() -> list[dict]:
-    """Fetch latest crypto news from CoinGecko (free, no key needed, real-time)."""
-    try:
-        resp = requests.get(COINGECKO_NEWS_URL, params={"per_page": 15}, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            articles, seen = [], set()
-            for item in data:
-                url = (item.get("url") or "").strip()
-                title = (item.get("title") or "").strip()
-                desc = (item.get("description") or "").strip()
-                if url and title and url not in seen:
-                    seen.add(url)
-                    articles.append({
-                        "title": title,
-                        "url": url,
-                        "source": {"name": item.get("author", "CoinGecko")},
-                        "description": desc,
-                    })
-            return articles
-    except Exception:
-        pass
-    return []
 
 
 def pick_unposted_article(articles: list[dict], posted: set) -> dict | None:
@@ -141,44 +121,16 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def generate_digest(news_api_key: str, groq_api_key: str) -> str:
-    """Fetch news across crypto, ai, defi, airdrops and write a conversational daily roundup."""
-    crypto_articles = fetch_crypto_news()
-    seen = set()
-    all_articles = []
-
-    for a in crypto_articles:
-        url = a.get("url", "").strip()
-        title = a.get("title", "").strip()
-        if url and title and url not in seen:
-            seen.add(url)
-            all_articles.append(f"[crypto] {title}\nSource: {url}")
-
-    categories = {
-        "ai": "artificial intelligence OR AI OR machine learning OR agent",
-    }
-    for category, query in categories.items():
-        try:
-            resp = requests.get(NEWS_API_URL, params={
-                "q": query, "from": _recent_from(),
-                "pageSize": 3, "sortBy": "publishedAt",
-                "language": "en", "apiKey": news_api_key,
-            }, timeout=15)
-            resp.raise_for_status()
-            payload = resp.json()
-            if payload.get("status") == "ok":
-                for a in payload.get("articles", []):
-                    url = a.get("url", "").strip()
-                    title = a.get("title", "").strip()
-                    desc = (a.get("description") or "").strip()
-                    if url and title and url not in seen:
-                        seen.add(url)
-                        all_articles.append(f"[{category}] {title}\n{desc}\nSource: {url}")
-        except Exception:
-            pass
-
-    if not all_articles:
+def generate_digest(groq_api_key: str) -> str:
+    """Fetch across crypto and ai RSS feeds, then write a conversational roundup."""
+    articles = fetch_rss(["crypto", "ai"], max_per_feed=4)
+    if not articles:
         return "Couldn't find any news right now."
+
+    lines = []
+    for a in articles:
+        desc = a.get("description", "")
+        lines.append(f"[{a['source']['name']}] {a['title']}\n{desc}\nSource: {a['url']}")
 
     groq_client = Groq(api_key=groq_api_key)
     resp = groq_client.chat.completions.create(
@@ -196,62 +148,28 @@ def generate_digest(news_api_key: str, groq_api_key: str) -> str:
                 "- Never use hashtags, emojis, or intro phrases like 'Here is'\n"
                 "- End with a short closing observation"
             )},
-            {"role": "user", "content": (
-                "Here are the latest stories across market, defi, ai, and airdrops:\n\n"
-                + "\n\n".join(all_articles)
-            )},
+            {"role": "user", "content": "Latest stories:\n\n" + "\n\n".join(lines)},
         ],
-        temperature=0.8,
-        max_tokens=2000,
+        temperature=0.8, max_tokens=2000,
     )
     return resp.choices[0].message.content.strip()
 
 
-def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
-    """Fetch multiple articles on a topic and write a long-form blog post."""
-    articles, seen = [], set()
-
-    if topic in ("crypto", "defi"):
-        crypto_articles = fetch_crypto_news()
-        for a in crypto_articles:
-            url = a.get("url", "").strip()
-            title = a.get("title", "").strip()
-            desc = (a.get("description") or "").strip()
-            if url and title and url not in seen:
-                seen.add(url)
-                articles.append(f"- {title}: {desc}\n  Source: {url}")
-
-    search_terms = {
-        "defi": "defi OR decentralized finance OR blockchain lending OR yield farming",
-        "ai": "artificial intelligence OR AI OR machine learning OR LLM OR GPT",
-        "crypto": "bitcoin OR ethereum OR cryptocurrency OR crypto market OR regulation",
-    }
-    query = search_terms.get(topic)
-    if query:
-        try:
-            resp = requests.get(NEWS_API_URL, params={
-                "q": query, "from": _recent_from(),
-                "pageSize": 5, "sortBy": "publishedAt",
-                "language": "en", "apiKey": news_api_key,
-            }, timeout=15)
-            resp.raise_for_status()
-            payload = resp.json()
-            if payload.get("status") == "ok":
-                for a in payload.get("articles", []):
-                    url = a.get("url", "").strip()
-                    title = a.get("title", "").strip()
-                    desc = (a.get("description") or "").strip()
-                    if url and title and url not in seen:
-                        seen.add(url)
-                        articles.append(f"- {title}: {desc}\n  Source: {url}")
-        except Exception:
-            pass
-
+def generate_blog_post(topic: str, groq_api_key: str) -> str:
+    """Fetch articles for a specific topic and write a deep-dive blog post."""
+    cats = {"defi": ["crypto"], "ai": ["ai"], "crypto": ["crypto"]}
+    articles = fetch_rss(cats.get(topic, ["crypto"]), max_per_feed=8)
     if not articles:
         return f"No recent news found on {topic}."
+
+    lines = []
+    for a in articles:
+        desc = a.get("description", "")
+        lines.append(f"- {a['title']}: {desc}\n  Source: {a['url']}")
+
     try:
         groq_client = Groq(api_key=groq_api_key)
-        resp2 = groq_client.chat.completions.create(
+        resp = groq_client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": (
@@ -264,17 +182,16 @@ def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
                     "- Never use hashtags, emojis, or marketing fluff\n"
                     "- End with a list of source URLs"
                 )},
-                {"role": "user", "content": "Here are the latest news stories:\n\n" + "\n\n".join(articles)},
+                {"role": "user", "content": "Latest stories:\n\n" + "\n\n".join(lines)},
             ],
             temperature=0.8, max_tokens=2000,
         )
-        return resp2.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"Error generating report: {e}"
 
 
 def split_long_message(text: str, limit: int = 4000) -> list[str]:
-    """Split a long message into chunks at paragraph boundaries."""
     if len(text) <= limit:
         return [text]
     parts = []
@@ -292,14 +209,13 @@ def split_long_message(text: str, limit: int = 4000) -> list[str]:
     return parts
 
 
-def post_news(bot_token: str, chat_id: str, news_api_key: str, groq_api_key: str) -> str | None:
-    """Fetch, rewrite, and send the latest unposted article. Returns the message id."""
+def post_news(bot_token: str, chat_id: str, groq_api_key: str) -> str | None:
+    """Fetch from RSS, rewrite and send the latest unposted article."""
     posted = load_posted_urls()
-    articles = fetch_latest_news(news_api_key)
+    articles = fetch_rss(["crypto", "ai"], max_per_feed=3)
     article = pick_unposted_article(articles, posted)
     if not article:
         return None
-
     groq_client = Groq(api_key=groq_api_key)
     rewritten = rewrite_headline(groq_client, article["title"], article["url"])
     msg_id = send_telegram(bot_token, chat_id, rewritten)
@@ -309,8 +225,7 @@ def post_news(bot_token: str, chat_id: str, news_api_key: str, groq_api_key: str
 
 
 def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
-                   news_api_key: str, groq_api_key: str) -> list[str]:
-    """Process a command and return list of response texts sent."""
+                   groq_api_key: str) -> list[str]:
     responses = []
 
     if text == "/start":
@@ -350,9 +265,8 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         if topic not in ("defi", "ai", "crypto"):
             topic = "crypto"
         try:
-            blog = generate_blog_post(topic, news_api_key, groq_api_key)
-            chunks = split_long_message(blog)
-            for chunk in chunks:
+            blog = generate_blog_post(topic, groq_api_key)
+            for chunk in split_long_message(blog):
                 send_telegram(bot_token, chat_id, chunk)
             responses.append(f"Report generated on {topic}")
         except Exception as e:
@@ -360,7 +274,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     elif text == "/digest":
         try:
-            digest = generate_digest(news_api_key, groq_api_key)
+            digest = generate_digest(groq_api_key)
             for chunk in split_long_message(digest):
                 send_telegram(bot_token, chat_id, chunk)
             responses.append("Digest sent")
@@ -369,9 +283,9 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     elif text == "/latest":
         try:
-            msg_id = post_news(bot_token, chat_id, news_api_key, groq_api_key)
+            msg_id = post_news(bot_token, chat_id, groq_api_key)
             if msg_id:
-                responses.append(f"Done \u2014 posted above \u2705")
+                responses.append("Done \u2014 posted above \u2705")
             else:
                 responses.append("No fresh articles right now \u2014 everything\u2019s already been posted!")
         except Exception as e:
@@ -385,7 +299,95 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
     return responses
 
 
-def run_cron(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
+def run_listener(bot_token: str, groq_api_key: str) -> None:
+    requests.get(f"https://api.telegram.org/bot{bot_token}/deleteWebhook", timeout=10)
+    requests.post(f"https://api.telegram.org/bot{bot_token}/setMyCommands", json={
+        "commands": [
+            {"command": "start", "description": "Welcome message"},
+            {"command": "digest", "description": "Daily roundup: crypto, AI, defi, airdrops"},
+            {"command": "latest", "description": "Get the latest news right now"},
+            {"command": "report", "description": "Deep dive on defi, ai, or crypto"},
+            {"command": "status", "description": "Bot stats and info"},
+            {"command": "help", "description": "Show available commands"},
+        ]
+    }, timeout=10)
+    print("Listener started \u2014 polling RSS feeds...")
+
+    state = load_json(STATE_DB) if os.path.exists(STATE_DB) else {}
+    if not isinstance(state, dict):
+        state = {}
+    last_update_id = state.get("last_update_id", 0)
+    last_news_time = 0
+    last_chat_id = state.get("last_chat_id")
+    news_interval = 7200
+
+    while True:
+        try:
+            offset = last_update_id + 1
+            resp = requests.get(
+                f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=30",
+                timeout=35,
+            )
+            data = resp.json()
+            if data.get("ok") and data.get("result"):
+                for update in data["result"]:
+                    uid = update["update_id"]
+                    msg = update.get("message", {})
+                    cid = str(msg.get("chat", {}).get("id", ""))
+                    txt = msg.get("text", "").strip()
+                    name = msg.get("from", {}).get("first_name", "")
+
+                    if cid and txt and txt.startswith("/"):
+                        need_news = any(
+                            kw in txt.lower() for kw in ["/latest", "/next", "/start"]
+                        )
+                        handle_command(bot_token, cid, txt, name, groq_api_key)
+                        if need_news:
+                            msg_id = post_news(bot_token, cid, groq_api_key)
+                            if msg_id:
+                                last_news_time = time.time()
+
+                    if cid and uid > last_update_id:
+                        last_chat_id = cid
+                        last_update_id = uid
+
+                state["last_update_id"] = last_update_id
+                state["last_chat_id"] = last_chat_id
+                save_json(STATE_DB, state)
+
+            if last_chat_id and time.time() - last_news_time >= news_interval:
+                try:
+                    msg_id = post_news(bot_token, last_chat_id, groq_api_key)
+                    if msg_id:
+                        last_news_time = time.time()
+                        print(f"Scheduled post: {msg_id}")
+                except Exception as e:
+                    print(f"Scheduled post failed: {e}", file=sys.stderr)
+                last_news_time = time.time()
+
+        except requests.exceptions.Timeout:
+            pass
+        except Exception as e:
+            print(f"Poll error: {e}", file=sys.stderr)
+            time.sleep(10)
+
+
+def main() -> None:
+    for var in ("TELEGRAM_BOT_TOKEN", "GROQ_API_KEY"):
+        if var not in os.environ:
+            print(f"Missing required env var: {var}", file=sys.stderr)
+            sys.exit(1)
+
+    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
+    groq_api_key = os.environ["GROQ_API_KEY"]
+
+    if "--listen" in sys.argv:
+        run_listener(bot_token, groq_api_key)
+    else:
+        run_cron(bot_token, groq_api_key)
+
+
+def run_cron(bot_token: str, groq_api_key: str) -> None:
     """Scheduled run: process any pending commands first, then post news."""
     state = load_json(STATE_DB) if os.path.exists(STATE_DB) else {}
     if not isinstance(state, dict):
@@ -405,9 +407,9 @@ def run_cron(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
                 msg = update.get("message", {})
                 cid = str(msg.get("chat", {}).get("id", ""))
                 txt = msg.get("text", "").strip()
-                name = msg.get("from", {}).get("first_name", "")
+                first_name = msg.get("from", {}).get("first_name", "")
                 if cid and txt:
-                    handle_command(bot_token, cid, txt, name, news_api_key, groq_api_key)
+                    handle_command(bot_token, cid, txt, first_name, groq_api_key)
                 if uid > last_id:
                     last_id = uid
             state["last_update_id"] = last_id
@@ -436,7 +438,7 @@ def run_cron(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
         sys.exit(0)
 
     try:
-        msg_id = post_news(bot_token, last_chat_id, news_api_key, groq_api_key)
+        msg_id = post_news(bot_token, last_chat_id, groq_api_key)
         if msg_id:
             print(f"Posted \u2014 message ID: {msg_id}")
         else:
@@ -444,96 +446,6 @@ def run_cron(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
     except Exception as e:
         print(f"News post failed: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-def run_listener(bot_token: str, news_api_key: str, groq_api_key: str) -> None:
-    """Long-polling listener: responds to commands instantly, posts news on schedule."""
-    requests.get(f"https://api.telegram.org/bot{bot_token}/deleteWebhook", timeout=10)
-    requests.post(f"https://api.telegram.org/bot{bot_token}/setMyCommands", json={
-        "commands": [
-            {"command": "start", "description": "Welcome message"},
-            {"command": "digest", "description": "Daily roundup: crypto, AI, defi, airdrops"},
-            {"command": "latest", "description": "Get the latest news right now"},
-            {"command": "report", "description": "Deep dive on defi, ai, or crypto"},
-            {"command": "status", "description": "Bot stats and info"},
-            {"command": "help", "description": "Show available commands"},
-        ]
-    }, timeout=10)
-    print("Listener started \u2014 polling for messages...")
-    state = load_json(STATE_DB) if os.path.exists(STATE_DB) else {}
-    if not isinstance(state, dict):
-        state = {}
-    last_update_id = state.get("last_update_id", 0)
-    last_news_time = 0
-    posted = load_posted_urls()
-    last_chat_id = state.get("last_chat_id")
-    news_interval = 7200  # 2 hours
-
-    while True:
-        try:
-            offset = last_update_id + 1
-            resp = requests.get(
-                f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=30",
-                timeout=35,
-            )
-            data = resp.json()
-            if data.get("ok") and data.get("result"):
-                for update in data["result"]:
-                    uid = update["update_id"]
-                    msg = update.get("message", {})
-                    cid = str(msg.get("chat", {}).get("id", ""))
-                    txt = msg.get("text", "").strip()
-                    name = msg.get("from", {}).get("first_name", "")
-
-                    if cid and txt and txt.startswith("/"):
-                        need_news = any(
-                            kw in txt.lower() for kw in ["/latest", "/next", "/start"]
-                        )
-                        handle_command(bot_token, cid, txt, name, news_api_key, groq_api_key)
-                        if need_news:
-                            msg_id = post_news(bot_token, cid, news_api_key, groq_api_key)
-                            if msg_id:
-                                last_news_time = time.time()
-
-                    if cid and uid > last_update_id:
-                        last_chat_id = cid
-                        last_update_id = uid
-
-                state["last_update_id"] = last_update_id
-                state["last_chat_id"] = last_chat_id
-                save_json(STATE_DB, state)
-
-            if last_chat_id and time.time() - last_news_time >= news_interval:
-                try:
-                    msg_id = post_news(bot_token, last_chat_id, news_api_key, groq_api_key)
-                    if msg_id:
-                        last_news_time = time.time()
-                        print(f"Scheduled post: {msg_id}")
-                except Exception as e:
-                    print(f"Scheduled post failed: {e}", file=sys.stderr)
-                last_news_time = time.time()
-
-        except requests.exceptions.Timeout:
-            pass
-        except Exception as e:
-            print(f"Poll error: {e}", file=sys.stderr)
-            time.sleep(10)
-
-
-def main() -> None:
-    for var in ("TELEGRAM_BOT_TOKEN", "NEWS_API_KEY", "GROQ_API_KEY"):
-        if var not in os.environ:
-            print(f"Missing required env var: {var}", file=sys.stderr)
-            sys.exit(1)
-
-    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
-    news_api_key = os.environ["NEWS_API_KEY"]
-    groq_api_key = os.environ["GROQ_API_KEY"]
-
-    if "--listen" in sys.argv:
-        run_listener(bot_token, news_api_key, groq_api_key)
-    else:
-        run_cron(bot_token, news_api_key, groq_api_key)
 
 
 if __name__ == "__main__":
