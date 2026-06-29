@@ -10,7 +10,7 @@ from groq import Groq
 POSTED_DB = "posted_articles.json"
 STATE_DB = "bot_state.json"
 NEWS_API_URL = "https://newsapi.org/v2/everything"
-CRYPTOPANIC_URL = "https://cryptopanic.com/api/posts/"
+COINGECKO_NEWS_URL = "https://api.coingecko.com/api/v3/news"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
@@ -90,26 +90,23 @@ def fetch_latest_news(api_key: str) -> list[dict]:
 
 
 def fetch_crypto_news() -> list[dict]:
-    """Fetch latest crypto news from CryptoPanic (free tier, no key needed but limited)."""
+    """Fetch latest crypto news from CoinGecko (free, no key needed, real-time)."""
     try:
-        resp = requests.get(CRYPTOPANIC_URL, params={
-            "kind": "news", "filter": "rising", "public": "true",
-        }, timeout=15)
+        resp = requests.get(COINGECKO_NEWS_URL, params={"per_page": 15}, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             articles, seen = [], set()
-            for r in data.get("results", []):
-                url = (r.get("url") or "").strip()
-                title = (r.get("title") or "").strip()
-                domain = r.get("domain", "")
-                source_name = r.get("source", {}).get("title", domain)
+            for item in data:
+                url = (item.get("url") or "").strip()
+                title = (item.get("title") or "").strip()
+                desc = (item.get("description") or "").strip()
                 if url and title and url not in seen:
                     seen.add(url)
                     articles.append({
                         "title": title,
                         "url": url,
-                        "source": {"name": source_name},
-                        "description": r.get("metadata", {}).get("description", ""),
+                        "source": {"name": item.get("author", "CoinGecko")},
+                        "description": desc,
                     })
             return articles
     except Exception:
