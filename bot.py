@@ -155,6 +155,34 @@ def generate_digest(groq_api_key: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
+def generate_summarized_digest(groq_api_key: str) -> str:
+    """Fetch RSS and produce a tweet-length summarized digest (~5 tweets)."""
+    articles = fetch_rss(["crypto", "ai"], max_per_feed=4)
+    if not articles:
+        return "Couldn't find any news right now."
+
+    lines = []
+    for a in articles:
+        desc = a.get("description", "")
+        lines.append(f"[{a['source']['name']}] {a['title']}\n{desc}\nSource: {a['url']}")
+
+    groq_client = Groq(api_key=groq_api_key)
+    resp = groq_client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": (
+                "Summarize the latest news into a tight, tweetable roundup. "
+                "Aim for 5 tweets worth of content \u2014 about 200-250 words total. "
+                "Hit the key developments across crypto and AI in a fast, scannable format. "
+                "Group related stories. No hashtags, emojis, or fluff."
+            )},
+            {"role": "user", "content": "Latest stories:\n\n" + "\n\n".join(lines)},
+        ],
+        temperature=0.7, max_tokens=500,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def generate_blog_post(topic: str, groq_api_key: str) -> str:
     """Fetch articles for a specific topic and write a deep-dive blog post."""
     cats = {"defi": ["crypto"], "ai": ["ai"], "crypto": ["crypto"]}
@@ -232,7 +260,8 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         responses.append(
             f"Hey {first_name}! I track crypto, finance, and tech news.\n\n"
             f"Every 2 hours I\u2019ll send a top headline rewritten by AI.\n\n"
-            f"/digest \u2014 Multi-topic daily roundup\n"
+            f"/full_digest \u2014 Full daily roundup\n"
+            f"/summarized_digest \u2014 Condensed tweet-length version\n"
             f"/latest \u2014 Get news right now\n"
             f"/report [topic] \u2014 Deep dive: defi, ai, crypto\n"
             f"/help \u2014 Commands\n"
@@ -242,7 +271,9 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
     elif text == "/help":
         responses.append(
             "/start \u2014 Welcome\n"
-            "/digest \u2014 Daily roundup across crypto, AI, defi, airdrops\n"
+            "/full_digest \u2014 Full daily roundup across crypto, AI, defi\n"
+            "/summarized_digest \u2014 Tweet-length summary (~5 tweets)\n"
+            "/digest \u2014 Alias for full_digest\n"
             "/latest \u2014 Post the top news story now\n"
             "/report defi \u2014 Deep dive into DeFi\n"
             "/report ai \u2014 Deep dive into AI\n"
@@ -272,14 +303,22 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         except Exception as e:
             responses.append(f"Failed to generate report: {e}")
 
-    elif text == "/digest":
+    elif text in ("/digest", "/full_digest"):
         try:
             digest = generate_digest(groq_api_key)
             for chunk in split_long_message(digest):
                 send_telegram(bot_token, chat_id, chunk)
-            responses.append("Digest sent")
+            responses.append("Full digest sent")
         except Exception as e:
             responses.append(f"Failed to generate digest: {e}")
+
+    elif text == "/summarized_digest":
+        try:
+            summary = generate_summarized_digest(groq_api_key)
+            send_telegram(bot_token, chat_id, summary)
+            responses.append("Summarized digest sent")
+        except Exception as e:
+            responses.append(f"Failed to generate summarized digest: {e}")
 
     elif text == "/latest":
         try:
@@ -304,7 +343,9 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
     requests.post(f"https://api.telegram.org/bot{bot_token}/setMyCommands", json={
         "commands": [
             {"command": "start", "description": "Welcome message"},
-            {"command": "digest", "description": "Daily roundup: crypto, AI, defi, airdrops"},
+            {"command": "full_digest", "description": "Full daily roundup: crypto, AI, defi"},
+            {"command": "summarized_digest", "description": "Tweet-length summary of today"},
+            {"command": "digest", "description": "Alias for full_digest"},
             {"command": "latest", "description": "Get the latest news right now"},
             {"command": "report", "description": "Deep dive on defi, ai, or crypto"},
             {"command": "status", "description": "Bot stats and info"},
