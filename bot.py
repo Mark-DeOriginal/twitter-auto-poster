@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from groq import Groq
@@ -52,10 +52,15 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> str | None:
     return None
 
 
+def _recent_from() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+
+
 def fetch_latest_news(api_key: str) -> list[dict]:
     resp = requests.get(NEWS_API_URL, params={
         "q": "crypto OR finance OR technology OR bitcoin OR ethereum OR stock OR market OR AI",
-        "pageSize": 5, "sortBy": "publishedAt", "language": "en", "apiKey": api_key,
+        "from": _recent_from(), "pageSize": 5, "sortBy": "publishedAt",
+        "language": "en", "apiKey": api_key,
     }, timeout=15)
     resp.raise_for_status()
     payload = resp.json()
@@ -112,7 +117,8 @@ def generate_digest(news_api_key: str, groq_api_key: str) -> str:
     for category, query in categories.items():
         try:
             resp = requests.get(NEWS_API_URL, params={
-                "q": query, "pageSize": 3, "sortBy": "publishedAt",
+                "q": query, "from": _recent_from(),
+                "pageSize": 3, "sortBy": "publishedAt",
                 "language": "en", "apiKey": news_api_key,
             }, timeout=15)
             resp.raise_for_status()
@@ -168,7 +174,8 @@ def generate_blog_post(topic: str, news_api_key: str, groq_api_key: str) -> str:
     query = search_terms.get(topic, search_terms["crypto"])
     try:
         resp = requests.get(NEWS_API_URL, params={
-            "q": query, "pageSize": 10, "sortBy": "publishedAt",
+            "q": query, "from": _recent_from(),
+            "pageSize": 10, "sortBy": "publishedAt",
             "language": "en", "apiKey": news_api_key,
         }, timeout=15)
         resp.raise_for_status()
