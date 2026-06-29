@@ -66,9 +66,21 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> str | None:
     return None
 
 
-def fetch_rss(categories: list[str], max_per_feed: int = 5) -> list[dict]:
-    """Fetch articles from RSS feeds grouped by categories."""
+def _parse_published(entry: dict) -> datetime | None:
+    try:
+        pp = getattr(entry, "published_parsed", None)
+        if pp:
+            return datetime(*pp[:6], tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def fetch_rss(categories: list[str], max_per_feed: int = 10,
+              max_age_days: int = 7) -> list[dict]:
+    """Fetch recent articles from RSS feeds, filtered and sorted by recency."""
     seen, articles = set(), []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     urls = []
     for cat in categories:
         urls.extend(RSS_FEEDS.get(cat, []))
@@ -81,6 +93,9 @@ def fetch_rss(categories: list[str], max_per_feed: int = 5) -> list[dict]:
                 title = (entry.get("title") or "").strip()
                 if not url or not title or url in seen:
                     continue
+                pub_date = _parse_published(entry)
+                if pub_date and pub_date < cutoff:
+                    continue
                 seen.add(url)
                 articles.append({
                     "title": title,
@@ -88,9 +103,14 @@ def fetch_rss(categories: list[str], max_per_feed: int = 5) -> list[dict]:
                     "source": {"name": getattr(parsed.feed, "title", "News")},
                     "description": (entry.get("summary") or entry.get("description") or "").strip(),
                     "published": entry.get("published", ""),
+                    "_sort": pub_date or datetime(2000, 1, 1, tzinfo=timezone.utc),
                 })
         except Exception:
             continue
+
+    articles.sort(key=lambda a: a["_sort"], reverse=True)
+    for a in articles:
+        del a["_sort"]
     return articles
 
 
