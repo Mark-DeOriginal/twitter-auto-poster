@@ -385,8 +385,17 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
     elif text == "/summarized_digest":
         try:
             summary = generate_summarized_digest(groq_api_key)
-            send_telegram(bot_token, chat_id, summary)
-            responses.append("Summarized digest sent")
+            if not summary.strip():
+                responses.append("Summary was empty — try again later.")
+            else:
+                sent_ok = False
+                for chunk in split_long_message(summary):
+                    if send_telegram(bot_token, chat_id, chunk):
+                        sent_ok = True
+                if sent_ok:
+                    responses.append("Summarized digest sent")
+                else:
+                    responses.append(f"Send failed, here\u2019s the content:\n\n{summary[:3000]}")
         except Exception as e:
             responses.append(f"Failed to generate summarized digest: {e}")
 
