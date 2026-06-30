@@ -457,7 +457,7 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
     last_update_id = state.get("last_update_id", 0)
     last_news_time = 0
     last_chat_id = state.get("last_chat_id")
-    news_interval = 7200
+    news_interval = 10800
 
     while True:
         try:
@@ -495,12 +495,12 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
 
             if last_chat_id and time.time() - last_news_time >= news_interval:
                 try:
-                    msg_id = post_news(bot_token, last_chat_id, groq_api_key)
-                    if msg_id:
-                        last_news_time = time.time()
-                        print(f"Scheduled post: {msg_id}")
+                    digest = generate_digest(groq_api_key)
+                    for chunk in split_long_message(digest):
+                        send_telegram(bot_token, last_chat_id, chunk)
+                    print(f"Scheduled digest sent")
                 except Exception as e:
-                    print(f"Scheduled post failed: {e}", file=sys.stderr)
+                    print(f"Scheduled digest failed: {e}", file=sys.stderr)
                 last_news_time = time.time()
 
         except requests.exceptions.Timeout:
