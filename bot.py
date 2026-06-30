@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -15,27 +16,24 @@ TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 RSS_FEEDS = {
     "digest": [
         "https://cointelegraph.com/rss",
-        "https://coindesk.com/arc/outboundfeeds/rss/",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
         "https://decrypt.co/feed",
         "https://thedefiant.io/api/feed",
         "https://techcrunch.com/feed/",
     ],
     "crypto": [
         "https://cointelegraph.com/rss",
-        "https://coindesk.com/arc/outboundfeeds/rss/",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
         "https://decrypt.co/feed",
         "https://cryptopotato.com/feed/",
-        "https://cryptoslate.com/feed/",
         "https://www.newsbtc.com/feed/",
     ],
     "ai": [
         "https://techcrunch.com/feed/",
-        "https://feeds.arstechnica.com/arstechnica/index",
     ],
     "defi": [
         "https://thedefiant.io/api/feed",
         "https://www.bankless.com/rss/feed",
-        "https://news.curve.finance/rss/",
         "https://blog.lido.fi/rss/",
     ],
     "airdrops": [
@@ -114,7 +112,10 @@ def fetch_rss(categories: list[str], max_per_feed: int = 10,
 
     for feed_url in urls:
         try:
-            parsed = feedparser.parse(feed_url, timeout=15)
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(15)
+            parsed = feedparser.parse(feed_url)
+            socket.setdefaulttimeout(old_timeout)
             for entry in parsed.entries[:max_per_feed]:
                 url = (entry.get("link") or "").strip()
                 title = (entry.get("title") or "").strip()
