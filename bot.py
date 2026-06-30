@@ -203,32 +203,32 @@ def generate_digest(groq_api_key: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def generate_summarized_digest(groq_api_key: str) -> str:
-    """Fetch RSS and produce a tweet-length summarized digest (~5 tweets)."""
-    articles = fetch_rss(["digest"], max_per_feed=4)
+def generate_summarized_digest(_groq_api_key: str) -> str:
+    """Format a clean, scannable summary from RSS feeds — no LLM needed."""
+    articles = fetch_rss(["digest"], max_per_feed=5)
+    if not articles:
+        # Fallback: try broader fetch
+        articles = fetch_rss(["crypto", "defi"], max_per_feed=3, max_age_days=7)
     if not articles:
         return "Couldn't find any news right now."
 
-    lines = []
-    for a in articles:
-        desc = a.get("description", "")
-        lines.append(f"[{a['source']['name']}] {a['title']}\n{desc}\nSource: {a['url']}")
+    seen_sources = {}
+    for a in articles[:12]:
+        src = a["source"]["name"]
+        seen_sources.setdefault(src, []).append(a)
 
-    groq_client = Groq(api_key=groq_api_key)
-    resp = groq_client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "system", "content": (
-                "Summarize the latest news into a tight, tweetable roundup. "
-                "Aim for 5 tweets worth of content \u2014 about 200-250 words total. "
-                "Hit the key developments across crypto and AI in a fast, scannable format. "
-                "Group related stories. No hashtags, emojis, or fluff."
-            )},
-            {"role": "user", "content": "Latest stories:\n\n" + "\n\n".join(lines)},
-        ],
-        temperature=0.7, max_tokens=500,
-    )
-    return resp.choices[0].message.content.strip()
+    parts = [f"Daily Brief — {datetime.now(timezone.utc).strftime('%b %d, %Y')}\n"]
+    for source, items in seen_sources.items():
+        parts.append(f"▸ {source}")
+        for a in items[:3]:
+            desc = a.get("description", "")[:120].rsplit(" ", 1)[0] + "..." if a.get("description") else ""
+            parts.append(f"  • {a['title']}")
+            if desc:
+                parts.append(f"    {desc}")
+            parts.append(f"    {a['url']}")
+        parts.append("")
+
+    return "\n".join(parts).strip()
 
 
 def generate_blogs_list(groq_api_key: str) -> str:
