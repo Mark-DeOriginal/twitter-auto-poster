@@ -372,7 +372,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     elif text == "/status":
         posted = load_posted_urls()
-        is_paused = state.get("news_paused", False) if state else False
+        is_paused = state.get("paused_chats", {}).get(chat_id, False) if state else False
         pause_status = "Paused" if is_paused else "Active"
         responses.append(
             f"Articles posted: {len(posted)}\n"
@@ -430,15 +430,15 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     elif text == "/pause_news":
         if state is not None:
-            state["news_paused"] = True
-            responses.append("30-min auto news paused. Use /resume_news to turn it back on.")
+            state.setdefault("paused_chats", {})[chat_id] = True
+            responses.append("Your 30-min auto news paused. Use /resume_news to turn it back on.")
         else:
             responses.append("Can't pause \u2014 no state available.")
 
     elif text == "/resume_news":
         if state is not None:
-            state["news_paused"] = False
-            responses.append("30-min auto news resumed.")
+            state.setdefault("paused_chats", {})[chat_id] = False
+            responses.append("Your 30-min auto news resumed.")
         else:
             responses.append("Can't resume \u2014 no state available.")
 
@@ -484,23 +484,21 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
         state = {}
     last_update_id = state.get("last_update_id", 0)
     last_news_time = 0
-    last_chat_id = state.get("last_chat_id")
-    news_paused = state.get("news_paused", False)
+    subscribed_chats = state.setdefault("subscribed_chats", [])
+    paused_chats = state.setdefault("paused_chats", {})
     news_interval = 1800
 
-    # Recover chat_id from past updates if state was lost
-    if not last_chat_id:
+    # Recover chat IDs from past updates if state was lost (first run)
+    if not subscribed_chats:
         try:
             resp = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", timeout=10)
             updates = resp.json()
             if updates.get("ok") and updates.get("result"):
-                for update in reversed(updates["result"]):
+                for update in updates["result"]:
                     cid = str(update.get("message", {}).get("chat", {}).get("id", ""))
-                    if cid:
-                        last_chat_id = cid
-                        state["last_chat_id"] = cid
-                        save_json(STATE_DB, state)
-                        break
+                    if cid and cid not in subscribed_chats:
+                        subscribed_chats.append(cid)
+                save_json(STATE_DB, state)
         except Exception:
             pass
 
@@ -521,6 +519,9 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
                     name = msg.get("from", {}).get("first_name", "")
 
                     if cid and txt and txt.startswith("/"):
+                        # auto-subscribe on any command
+                        if cid not in subscribed_chats:
+                            subscribed_chats.append(cid)
                         need_news = any(
                             kw in txt.lower() for kw in ["/latest", "/next", "/start"]
                         )
@@ -531,23 +532,25 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
                                 last_news_time = time.time()
 
                     if cid and uid > last_update_id:
-                        last_chat_id = cid
                         last_update_id = uid
 
                 state["last_update_id"] = last_update_id
-                state["last_chat_id"] = last_chat_id
-                state["news_paused"] = news_paused
+                state["subscribed_chats"] = subscribed_chats
+                state["paused_chats"] = paused_chats
                 save_json(STATE_DB, state)
 
-            if last_chat_id and not news_paused and time.time() - last_news_time >= news_interval:
-                try:
-                    msg_id = post_news(bot_token, last_chat_id, groq_api_key)
-                    if msg_id:
-                        print(f"Scheduled news: {msg_id}")
-                    else:
-                        print("Scheduled news: no fresh articles")
-                except Exception as e:
-                    print(f"Scheduled news failed: {e}", file=sys.stderr)
+            if subscribed_chats and time.time() - last_news_time >= news_interval:
+                for cid in subscribed_chats:
+                    if paused_chats.get(cid):
+                        continue
+                    try:
+                        msg_id = post_news(bot_token, cid, groq_api_key)
+                        if msg_id:
+                            print(f"Scheduled news to {cid}: {msg_id}")
+                        else:
+                            print(f"Scheduled news to {cid}: no fresh articles")
+                    except Exception as e:
+                        print(f"Scheduled news to {cid} failed: {e}", file=sys.stderr)
                 last_news_time = time.time()
 
         except requests.exceptions.Timeout:
@@ -587,6 +590,7 @@ def run_cron(bot_token: str, groq_api_key: str) -> None:
         data = resp.json()
         if data.get("ok") and data.get("result"):
             last_id = state.get("last_update_id", 0)
+            subscribed = state.setdefault("subscribed_chats", [])
             for update in data["result"]:
                 uid = update["update_id"]
                 msg = update.get("message", {})
@@ -594,6 +598,8 @@ def run_cron(bot_token: str, groq_api_key: str) -> None:
                 txt = msg.get("text", "").strip()
                 first_name = msg.get("from", {}).get("first_name", "")
                 if cid and txt:
+                    if cid not in subscribed:
+                        subscribed.append(cid)
                     handle_command(bot_token, cid, txt, first_name, groq_api_key, state)
                 if uid > last_id:
                     last_id = uid
@@ -605,32 +611,37 @@ def run_cron(bot_token: str, groq_api_key: str) -> None:
     state = load_json(STATE_DB) if os.path.exists(STATE_DB) else {}
     if not isinstance(state, dict):
         state = {}
-    last_chat_id = state.get("last_chat_id")
+    subscribed_chats = state.setdefault("subscribed_chats", [])
+    paused_chats = state.setdefault("paused_chats", {})
 
-    if not last_chat_id:
+    if not subscribed_chats:
         try:
             resp = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", timeout=10)
             data = resp.json()
             if data.get("ok") and data.get("result"):
-                last_chat_id = str(data["result"][-1]["message"]["chat"]["id"])
-                state["last_chat_id"] = last_chat_id
+                for update in data["result"]:
+                    cid = str(update.get("message", {}).get("chat", {}).get("id", ""))
+                    if cid and cid not in subscribed_chats:
+                        subscribed_chats.append(cid)
                 save_json(STATE_DB, state)
         except Exception:
             pass
 
-    if not last_chat_id:
+    if not subscribed_chats:
         print("No messages yet \u2014 message the bot on Telegram to start receiving updates")
         sys.exit(0)
 
-    try:
-        msg_id = post_news(bot_token, last_chat_id, groq_api_key)
-        if msg_id:
-            print(f"Posted \u2014 message ID: {msg_id}")
-        else:
-            print("All articles already posted; nothing to do")
-    except Exception as e:
-        print(f"News post failed: {e}", file=sys.stderr)
-        sys.exit(1)
+    for cid in subscribed_chats:
+        if paused_chats.get(cid):
+            continue
+        try:
+            msg_id = post_news(bot_token, cid, groq_api_key)
+            if msg_id:
+                print(f"Posted to {cid} \u2014 message ID: {msg_id}")
+            else:
+                print(f"All articles already posted for {cid}; nothing to do")
+        except Exception as e:
+            print(f"News post failed for {cid}: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
