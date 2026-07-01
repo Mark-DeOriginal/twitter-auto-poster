@@ -332,7 +332,7 @@ def post_news(bot_token: str, chat_id: str, groq_api_key: str) -> str | None:
 
 
 def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
-                   groq_api_key: str) -> list[str]:
+                   groq_api_key: str, state: dict | None = None) -> list[str]:
     responses = []
 
     if text == "/start":
@@ -345,6 +345,8 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             f"/summarized_digest \u2014 Condensed tweet-length version\n"
             f"/blogs \u2014 Curated blog posts and deep dives\n"
             f"/latest \u2014 Get news right now\n"
+            f"/pause_news \u2014 Pause 30-min auto news\n"
+            f"/resume_news \u2014 Resume 30-min auto news\n"
             f"/report [topic] \u2014 Deep dive: defi, ai, crypto\n"
             f"/help \u2014 Commands\n"
             f"/status \u2014 Stats"
@@ -359,6 +361,8 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             "/digest \u2014 Alias for full_digest\n"
             "/blogs \u2014 Curated blog posts and analysis links\n"
             "/latest \u2014 Post the top news story now\n"
+            "/pause_news \u2014 Pause the 30-min automatic news\n"
+            "/resume_news \u2014 Resume the 30-min automatic news\n"
             "/report defi \u2014 Deep dive into DeFi\n"
             "/report ai \u2014 Deep dive into AI\n"
             "/report crypto \u2014 Deep dive into crypto\n"
@@ -368,9 +372,11 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
 
     elif text == "/status":
         posted = load_posted_urls()
+        is_paused = state.get("news_paused", False) if state else False
+        pause_status = "Paused" if is_paused else "Active"
         responses.append(
             f"Articles posted: {len(posted)}\n"
-            f"Schedule: Every 30 minutes\n"
+            f"Schedule: Every 30 minutes ({pause_status})\n"
             f"Topics: Crypto, Defi, AI, Airdrops, Mining, Onchain"
         )
 
@@ -422,6 +428,20 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         except Exception as e:
             responses.append(f"Failed to fetch blogs: {e}")
 
+    elif text == "/pause_news":
+        if state is not None:
+            state["news_paused"] = True
+            responses.append("30-min auto news paused. Use /resume_news to turn it back on.")
+        else:
+            responses.append("Can't pause \u2014 no state available.")
+
+    elif text == "/resume_news":
+        if state is not None:
+            state["news_paused"] = False
+            responses.append("30-min auto news resumed.")
+        else:
+            responses.append("Can't resume \u2014 no state available.")
+
     elif text in ("/latest", "/brief_news"):
         try:
             msg_id = post_news(bot_token, chat_id, groq_api_key)
@@ -453,6 +473,8 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
             {"command": "report", "description": "Deep dive on defi, ai, or crypto"},
             {"command": "status", "description": "Bot stats and info"},
             {"command": "help", "description": "Show available commands"},
+            {"command": "pause_news", "description": "Pause 30-min auto news"},
+            {"command": "resume_news", "description": "Resume 30-min auto news"},
         ]
     }, timeout=10)
     print("Listener started \u2014 polling RSS feeds...")
@@ -463,6 +485,7 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
     last_update_id = state.get("last_update_id", 0)
     last_news_time = 0
     last_chat_id = state.get("last_chat_id")
+    news_paused = state.get("news_paused", False)
     news_interval = 1800
 
     # Recover chat_id from past updates if state was lost
@@ -501,7 +524,7 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
                         need_news = any(
                             kw in txt.lower() for kw in ["/latest", "/next", "/start"]
                         )
-                        handle_command(bot_token, cid, txt, name, groq_api_key)
+                        handle_command(bot_token, cid, txt, name, groq_api_key, state)
                         if need_news:
                             msg_id = post_news(bot_token, cid, groq_api_key)
                             if msg_id:
@@ -513,9 +536,10 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
 
                 state["last_update_id"] = last_update_id
                 state["last_chat_id"] = last_chat_id
+                state["news_paused"] = news_paused
                 save_json(STATE_DB, state)
 
-            if last_chat_id and time.time() - last_news_time >= news_interval:
+            if last_chat_id and not news_paused and time.time() - last_news_time >= news_interval:
                 try:
                     msg_id = post_news(bot_token, last_chat_id, groq_api_key)
                     if msg_id:
@@ -570,7 +594,7 @@ def run_cron(bot_token: str, groq_api_key: str) -> None:
                 txt = msg.get("text", "").strip()
                 first_name = msg.get("from", {}).get("first_name", "")
                 if cid and txt:
-                    handle_command(bot_token, cid, txt, first_name, groq_api_key)
+                    handle_command(bot_token, cid, txt, first_name, groq_api_key, state)
                 if uid > last_id:
                     last_id = uid
             state["last_update_id"] = last_id
