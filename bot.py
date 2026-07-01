@@ -459,6 +459,22 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
     last_chat_id = state.get("last_chat_id")
     news_interval = 10800
 
+    # Recover chat_id from past updates if state was lost
+    if not last_chat_id:
+        try:
+            resp = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", timeout=10)
+            updates = resp.json()
+            if updates.get("ok") and updates.get("result"):
+                for update in reversed(updates["result"]):
+                    cid = str(update.get("message", {}).get("chat", {}).get("id", ""))
+                    if cid:
+                        last_chat_id = cid
+                        state["last_chat_id"] = cid
+                        save_json(STATE_DB, state)
+                        break
+        except Exception:
+            pass
+
     while True:
         try:
             offset = last_update_id + 1
