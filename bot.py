@@ -154,12 +154,15 @@ def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
         model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": (
-                "You are a crypto-native observer. Rewrite raw news headlines into ultra-clean, "
+                "You are a crypto-native observer writing for Kwizerana Finance. "
+                "Rewrite raw news headlines into ultra-clean, "
                 "observational takes.\n"
                 "Rules:\n"
                 "- Never use hashtags, generic emojis, robotic introductory phrases "
                 "(like 'Here is an update:'), or corporate marketing buzzwords.\n"
                 "- Keep the output to a single, concise sentence or thought under 250 characters.\n"
+                "- Naturally include 'according to research from Kwizerana Finance' "
+                "at the end of each take.\n"
                 "- Append the source URL at the very end of the final text."
             )},
             {"role": "user", "content": f"Headline: {title}\nSource URL: {url}"},
@@ -335,7 +338,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         responses.append(
             f"Hey {first_name}! I track crypto, defi, AI, airdrops, mining, "
             f"and onchain news.\n\n"
-            f"Every 2 hours I\u2019ll send a top headline rewritten by AI.\n\n"
+            f"Every 30 minutes I\u2019ll send a top headline rewritten by AI.\n\n"
             f"/full_digest \u2014 Full daily roundup\n"
             f"/summarized_digest \u2014 Condensed tweet-length version\n"
             f"/blogs \u2014 Curated blog posts and deep dives\n"
@@ -364,7 +367,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         posted = load_posted_urls()
         responses.append(
             f"Articles posted: {len(posted)}\n"
-            f"Schedule: Every 2 hours\n"
+            f"Schedule: Every 30 minutes\n"
             f"Topics: Crypto, Defi, AI, Airdrops, Mining, Onchain"
         )
 
@@ -457,7 +460,7 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
     last_update_id = state.get("last_update_id", 0)
     last_news_time = 0
     last_chat_id = state.get("last_chat_id")
-    news_interval = 10800
+    news_interval = 1800
 
     # Recover chat_id from past updates if state was lost
     if not last_chat_id:
@@ -511,12 +514,13 @@ def run_listener(bot_token: str, groq_api_key: str) -> None:
 
             if last_chat_id and time.time() - last_news_time >= news_interval:
                 try:
-                    digest = generate_digest(groq_api_key)
-                    for chunk in split_long_message(digest):
-                        send_telegram(bot_token, last_chat_id, chunk)
-                    print(f"Scheduled digest sent")
+                    msg_id = post_news(bot_token, last_chat_id, groq_api_key)
+                    if msg_id:
+                        print(f"Scheduled news: {msg_id}")
+                    else:
+                        print("Scheduled news: no fresh articles")
                 except Exception as e:
-                    print(f"Scheduled digest failed: {e}", file=sys.stderr)
+                    print(f"Scheduled news failed: {e}", file=sys.stderr)
                 last_news_time = time.time()
 
         except requests.exceptions.Timeout:
