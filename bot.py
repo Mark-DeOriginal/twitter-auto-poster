@@ -149,25 +149,23 @@ def pick_unposted_article(articles: list[dict], posted: set) -> dict | None:
     return None
 
 
-def rewrite_headline(groq_client: Groq, title: str, url: str) -> str:
+def rewrite_headline(groq_client: Groq, title: str, description: str, url: str) -> str:
     resp = groq_client.chat.completions.create(
         model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": (
-                "You are a crypto-native observer writing for Kwizerana Finance. "
-                "Rewrite raw news headlines into ultra-clean, "
-                "observational takes.\n"
+                "Rewrite a news item into a clean, scannable format. "
+                "Return the original headline on the first line, "
+                "then a 1-2 sentence summary of what happened, "
+                "then the source URL on a separate line.\n"
                 "Rules:\n"
-                "- Never use hashtags, generic emojis, robotic introductory phrases "
-                "(like 'Here is an update:'), or corporate marketing buzzwords.\n"
-                "- Keep the output to a single, concise sentence or thought under 250 characters.\n"
-                "- Naturally include 'according to research from Kwizerana Finance' "
-                "at the end of each take.\n"
-                "- Append the source URL at the very end of the final text."
+                "- Never use hashtags, emojis, or intro phrases like 'Here is'\n"
+                "- Keep the summary concise and factual\n"
+                "- End with the URL on its own line"
             )},
-            {"role": "user", "content": f"Headline: {title}\nSource URL: {url}"},
+            {"role": "user", "content": f"Headline: {title}\nDescription: {description}\nSource URL: {url}"},
         ],
-        temperature=0.7, max_tokens=150,
+        temperature=0.5, max_tokens=200,
     )
     return resp.choices[0].message.content.strip()
 
@@ -188,16 +186,18 @@ def generate_digest(groq_api_key: str) -> str:
         model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": (
-                "You write a daily crypto & tech roundup. Your style is natural, "
-                "conversational, and informative\u2014like a knowledgeable friend sharing "
-                "what's happening across different corners of the space.\n\n"
+                "You write a daily crypto & tech roundup for Kwizerana Finance. "
+                "Your style is natural, conversational, and informative\u2014like a "
+                "knowledgeable friend sharing what's happening across different corners "
+                "of the space.\n\n"
                 "Rules:\n"
                 "- Write 400-600 words covering multiple stories\n"
                 "- Use natural transitions between topics (don't just list them)\n"
                 "- Mention specific prices, projects, and people where relevant\n"
                 "- Keep it flowing and readable, not robotic or corporate\n"
                 "- Never use hashtags, emojis, or intro phrases like 'Here is'\n"
-                "- End with a short closing observation"
+                "- End with a short closing observation that includes "
+                "'according to research from Kwizerana Finance'"
             )},
             {"role": "user", "content": "Latest stories:\n\n" + "\n\n".join(lines)},
         ],
@@ -221,6 +221,7 @@ def generate_summarized_digest(_groq_api_key: str) -> str:
         seen_sources.setdefault(src, []).append(a)
 
     parts = [f"Daily Brief — {datetime.now(timezone.utc).strftime('%b %d, %Y')}\n"]
+    parts.append("according to research from Kwizerana Finance\n")
     for source, items in seen_sources.items():
         parts.append(f"▸ {source}")
         for a in items[:3]:
@@ -323,7 +324,7 @@ def post_news(bot_token: str, chat_id: str, groq_api_key: str) -> str | None:
     if not article:
         return None
     groq_client = Groq(api_key=groq_api_key)
-    rewritten = rewrite_headline(groq_client, article["title"], article["url"])
+    rewritten = rewrite_headline(groq_client, article["title"], article.get("description", ""), article["url"])
     msg_id = send_telegram(bot_token, chat_id, rewritten)
     if msg_id:
         save_article(article["url"], article["title"])

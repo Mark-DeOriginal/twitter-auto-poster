@@ -55,7 +55,7 @@ def webhook():
             articles = fetch_latest_news(NEWS_API_KEY)
             if articles:
                 groq_client = Groq(api_key=GROQ_API_KEY)
-                rewritten = rewrite_headline(groq_client, articles[0]["title"], articles[0]["url"])
+                rewritten = rewrite_headline(groq_client, articles[0]["title"], articles[0].get("description", ""), articles[0]["url"])
                 send_telegram(BOT_TOKEN, chat_id, rewritten)
                 send_telegram(BOT_TOKEN, chat_id, "Done \u2014 posted above \u2705")
             else:
