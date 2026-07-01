@@ -340,6 +340,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
             f"Hey {first_name}! I track crypto, defi, AI, airdrops, mining, "
             f"and onchain news.\n\n"
             f"Every 30 minutes I\u2019ll send a top headline rewritten by AI.\n\n"
+            f"/brief_news \u2014 Quick headline + summary + link\n"
             f"/full_digest \u2014 Full daily roundup\n"
             f"/summarized_digest \u2014 Condensed tweet-length version\n"
             f"/blogs \u2014 Curated blog posts and deep dives\n"
@@ -352,6 +353,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
     elif text == "/help":
         responses.append(
             "/start \u2014 Welcome\n"
+            "/brief_news \u2014 Quick headline + summary + link\n"
             "/full_digest \u2014 Full daily roundup across crypto, AI, defi\n"
             "/summarized_digest \u2014 Tweet-length summary (~5 tweets)\n"
             "/digest \u2014 Alias for full_digest\n"
@@ -420,7 +422,7 @@ def handle_command(bot_token: str, chat_id: str, text: str, first_name: str,
         except Exception as e:
             responses.append(f"Failed to fetch blogs: {e}")
 
-    elif text == "/latest":
+    elif text in ("/latest", "/brief_news"):
         try:
             msg_id = post_news(bot_token, chat_id, groq_api_key)
             if msg_id:
